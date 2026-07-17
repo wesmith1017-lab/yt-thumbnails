@@ -1,0 +1,105 @@
+name: YouTube Thumbnails
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs INSIDE the artwork repo (wesmith1017-lab/yt-thumbnails). Because the
+# artwork is checked out alongside the bots, thumbnails are read straight off
+# disk (LOCAL_ARTWORK_ROOT) — no artwork PAT, and the auto GITHUB_TOKEN is used
+# only to commit updated state back to this repo.
+#
+# Per-show weekday cadence (mirrors the old laptop schedule). cron is UTC only,
+# and scheduled runs commonly lag 5–15+ minutes. Episodes publish at 3 AM ET, so
+# these mid-morning runs always land well after the drop. Times are pinned to
+# Eastern DAYLIGHT offsets; in winter each simply fires an hour earlier in ET,
+# still safely after 3 AM, so no seasonal edits are needed.
+#
+# Bi-weekly shows (SFS, BSF) and SCC's "last Tuesday of the month" run weekly and
+# no-op on empty weeks: every bot returns early when the RSS feed has nothing new.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '0 14 * * 2'   # Tue ~10 AM ET — Space Crime Continuum + The BIG Sci-Fi Podcast
+    - cron: '0 14 * * 5'   # Fri ~10 AM ET — SyFy Sistas
+    - cron: '0 12 * * 4'   # Thu ~8 AM ET  — We Are Starfleet
+    # - cron: '0 14 * * 3' # Wed ~10 AM ET — Planet Zero (DISABLED: between seasons)
+  workflow_dispatch:
+    inputs:
+      show:
+        description: 'Show(s) to run now'
+        type: choice
+        default: all
+        options:
+          - all      # all active shows (scc, sfs, bsf, was)
+          - scc
+          - sfs
+          - bsf
+          - was
+          - pz       # disabled on schedule; runnable manually
+
+permissions:
+  contents: write   # to commit updated bot/state back to this repo
+
+concurrency:
+  group: thumbnails
+  cancel-in-progress: false
+
+jobs:
+  thumbnails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4      # checks out artwork + bot/ together
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r bot/requirements.txt
+
+      - name: Resolve which shows to run
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            sel="${{ github.event.inputs.show }}"
+            if [ "$sel" = "all" ]; then shows="scc sfs bsf was"; else shows="$sel"; fi
+          else
+            case "${{ github.event.schedule }}" in
+              "0 14 * * 2") shows="scc bsf" ;;
+              "0 14 * * 5") shows="sfs" ;;
+              "0 12 * * 4") shows="was" ;;
+              "0 14 * * 3") shows="pz" ;;
+              *)            shows="" ;;
+            esac
+          fi
+          echo "shows=$shows" >> "$GITHUB_OUTPUT"
+          echo "Shows to run: ${shows:-<none>}"
+
+      - name: Run thumbnail bot(s)
+        if: steps.pick.outputs.shows != ''
+        working-directory: bot
+        env:
+          YOUTUBE_CLIENT_ID:     ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          # Artwork is checked out at the repo root; read it from disk (no token).
+          LOCAL_ARTWORK_ROOT: ${{ github.workspace }}
+        run: |
+          set -e
+          for s in ${{ steps.pick.outputs.shows }}; do
+            echo "::group::$s"
+            python "${s}_thumbnail_bot.py"
+            echo "::endgroup::"
+          done
+
+      - name: Commit updated state
+        if: steps.pick.outputs.shows != ''
+        run: |
+          git config user.name  "yt-thumbnails[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot/state/*.json
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "Update thumbnail state [skip ci]"
+            git push
+          fi
