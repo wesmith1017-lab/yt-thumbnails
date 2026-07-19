@@ -1,0 +1,11 @@
+# Local OAuth credentials — NEVER commit these.
+# Real secrets live in GitHub Actions secrets; these files are local-only
+# inputs for bot/youtube_auth_setup.py.
+bot/client_secrets.json
+client_secrets.json
+bot/token.json
+token.json
+*.token.json
+
+# Keep the *.example templates tracked (they contain placeholders only):
+!bot/client_secrets.json.example
