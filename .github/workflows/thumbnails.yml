@@ -83,6 +83,10 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           # Artwork is checked out at the repo root; read it from disk (no token).
           LOCAL_ARTWORK_ROOT: ${{ github.workspace }}
+          # Manual "Run now" (workflow_dispatch) forces a re-apply of the current
+          # artwork, ignoring saved state. Scheduled runs stay state-based so they
+          # don't re-upload the same thumbnail every week.
+          FORCE_REPROCESS: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: |
           set -e
           for s in ${{ steps.pick.outputs.shows }}; do

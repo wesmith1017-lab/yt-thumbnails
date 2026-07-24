@@ -104,22 +104,25 @@ NS = {
 }
 
 
-def fetch_new_videos(already_processed: list[str]) -> list[tuple[str, str]]:
+def fetch_feed_videos() -> list[tuple[str, str]]:
+    """
+    Returns [(video_id, title), ...] for EVERY entry in the feed (newest first).
+    Filtering against saved state happens in main(), so force mode can bypass it.
+    """
     log(f"Fetching RSS feed: {RSS_URL}")
     resp = requests.get(RSS_URL, timeout=30)
     resp.raise_for_status()
 
     root = ET.fromstring(resp.content)
-    new_videos = []
+    videos = []
 
     for entry in root.findall("atom:entry", NS):
         video_id = entry.findtext("yt:videoId", namespaces=NS)
         title    = entry.findtext("atom:title",  namespaces=NS)
-        if video_id and title and video_id not in already_processed:
-            new_videos.append((video_id, title.strip()))
+        if video_id and title:
+            videos.append((video_id, title.strip()))
 
-    return new_videos
-
+    return videos
 
 # ── GitHub thumbnail fetch ────────────────────────────────────────────────────
 
@@ -176,54 +179,63 @@ def upload_thumbnail(youtube, video_id: str, image_data: bytes, ext: str):
 def main():
     log("SyFy Sistas Thumbnail Bot — starting")
 
+    # FORCE_REPROCESS (set by manual workflow_dispatch runs) makes the bot ignore
+    # saved state and re-apply whatever artwork is currently in the repo. A manual
+    # "Run now" should ALWAYS push the current thumbnail, no matter what state says.
+    force = os.environ.get("FORCE_REPROCESS", "").strip().lower() in ("1", "true", "yes", "on")
+
     state = load_state()
     processed_ids: list[str] = state.get("processed_video_ids", [])
 
-    new_videos = fetch_new_videos(processed_ids)
+    all_videos = fetch_feed_videos()
+    if force:
+        log("FORCE mode: ignoring saved state; re-applying any matching artwork.")
+        candidates = all_videos
+    else:
+        candidates = [(vid, t) for vid, t in all_videos if vid not in processed_ids]
 
-    if not new_videos:
-        log("No new videos found. Nothing to do.")
+    if not candidates:
+        log("No videos to process. Nothing to do.")
         return
 
-    log(f"Found {len(new_videos)} new video(s): {[t for _, t in new_videos]}")
+    # Match artwork BEFORE authenticating, so OAuth is only touched when there is
+    # actually something to upload. A video with no matching file is skipped but
+    # NOT marked processed, so a thumbnail added later still gets picked up.
+    to_upload = []
+    for video_id, title in candidates:
+        slug = title_to_slug(title)
+        image_data, ext = fetch_thumbnail(slug)
+        if image_data is None:
+            log(f'No thumbnail for "{title}" (slug: {slug}) - skipping (not an error).')
+            continue
+        to_upload.append((video_id, title, slug, image_data, ext))
+
+    if not to_upload:
+        log("No matching artwork for any candidate video. Nothing to upload.")
+        return
 
     youtube = get_youtube_client()
     updated = []
-    skipped = []
 
-    for video_id, title in new_videos:
-        slug = title_to_slug(title)
-        log(f'\nProcessing: "{title}" (ID: {video_id}, slug: {slug})')
-
-        image_data, ext = fetch_thumbnail(slug)
-
-        if image_data is None:
-            log(f"  No thumbnail file found for slug '{slug}' — skipping (not an error).")
-            skipped.append(title)
-            processed_ids.append(video_id)
-            continue
-
-        log(f"  Uploading thumbnail to YouTube...")
+    for video_id, title, slug, image_data, ext in to_upload:
+        log(f'Uploading thumbnail for "{title}" (ID: {video_id}, slug: {slug})...')
         try:
             upload_thumbnail(youtube, video_id, image_data, ext)
         except Exception as e:
             raise RuntimeError(
                 f'Thumbnail upload FAILED for "{title}" (ID: {video_id}): {e}'
             ) from e
-        log(f"  Done!")
+        log("  Done!")
         updated.append(title)
-        processed_ids.append(video_id)
+        if video_id not in processed_ids:
+            processed_ids.append(video_id)
 
     state["processed_video_ids"] = processed_ids[-200:]
     save_state(state)
 
-    log("\n--- Summary ---")
-    if updated:
-        log(f"Thumbnails uploaded: {', '.join(updated)}")
-    if skipped:
-        log(f"Skipped (no thumbnail found): {', '.join(skipped)}")
+    log("--- Summary ---")
+    log(f"Thumbnails uploaded: {', '.join(updated)}")
     log("Done.")
-
 
 if __name__ == "__main__":
     main()
