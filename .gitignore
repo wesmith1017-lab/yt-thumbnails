@@ -9,3 +9,11 @@ token.json
 
 # Keep the *.example templates tracked (they contain placeholders only):
 !bot/client_secrets.json.example
+bot/__pycache__/bdp_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/bsf_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/c47_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/cc_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/pz_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/scc_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/sfs_thumbnail_bot.cpython-310.pyc
+bot/__pycache__/was_thumbnail_bot.cpython-310.pyc
