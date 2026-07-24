@@ -21,6 +21,7 @@ on:
     - cron: '0 14 * * 2'   # Tue ~10 AM ET — Space Crime Continuum + The BIG Sci-Fi Podcast
     - cron: '0 14 * * 5'   # Fri ~10 AM ET — SyFy Sistas
     - cron: '0 12 * * 4'   # Thu ~8 AM ET  — We Are Starfleet
+    - cron: '0 14 * * 1'   # Mon ~10 AM ET — The Brian Donahue Podcast
     # - cron: '0 14 * * 3' # Wed ~10 AM ET — Planet Zero (DISABLED: between seasons)
   workflow_dispatch:
     inputs:
@@ -29,11 +30,12 @@ on:
         type: choice
         default: all
         options:
-          - all      # all active shows (scc, sfs, bsf, was)
+          - all      # all active shows (scc, sfs, bsf, was, bdp)
           - scc
           - sfs
           - bsf
           - was
+          - bdp
           - pz       # disabled on schedule; runnable manually
 
 permissions:
@@ -61,12 +63,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             sel="${{ github.event.inputs.show }}"
-            if [ "$sel" = "all" ]; then shows="scc sfs bsf was"; else shows="$sel"; fi
+            if [ "$sel" = "all" ]; then shows="scc sfs bsf was bdp"; else shows="$sel"; fi
           else
             case "${{ github.event.schedule }}" in
               "0 14 * * 2") shows="scc bsf" ;;
               "0 14 * * 5") shows="sfs" ;;
               "0 12 * * 4") shows="was" ;;
+              "0 14 * * 1") shows="bdp" ;;
               "0 14 * * 3") shows="pz" ;;
               *)            shows="" ;;
             esac
