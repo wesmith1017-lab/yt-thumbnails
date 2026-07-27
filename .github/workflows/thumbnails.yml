@@ -6,11 +6,13 @@ name: YouTube Thumbnails
 # disk (LOCAL_ARTWORK_ROOT) — no artwork PAT, and the auto GITHUB_TOKEN is used
 # only to commit updated state back to this repo.
 #
-# Per-show weekday cadence (mirrors the old laptop schedule). cron is UTC only,
-# and scheduled runs commonly lag 5–15+ minutes. Episodes publish at 3 AM ET, so
-# these mid-morning runs always land well after the drop. Times are pinned to
-# Eastern DAYLIGHT offsets; in winter each simply fires an hour earlier in ET,
-# still safely after 3 AM, so no seasonal edits are needed.
+# Per-show weekday cadence (mirrors the old laptop schedule). cron is UTC only
+# and best-effort: GitHub delays scheduled runs most at the top of the hour, so
+# these fire at :20 past (off-peak) to avoid the multi-hour delays / drops seen
+# on the old '0 14' slot. Episodes publish at 3 AM ET, so these ~8:20 AM ET runs
+# always land well after the drop. Times are pinned to Eastern DAYLIGHT offsets;
+# in winter each simply fires an hour earlier in ET, still safely after 3 AM, so
+# no seasonal edits are needed.
 #
 # Bi-weekly shows (SFS, BSF) and SCC's "last Tuesday of the month" run weekly and
 # no-op on empty weeks: every bot returns early when the RSS feed has nothing new.
@@ -18,11 +20,11 @@ name: YouTube Thumbnails
 
 on:
   schedule:
-    - cron: '0 14 * * 2'   # Tue ~10 AM ET — Space Crime Continuum + The BIG Sci-Fi Podcast
-    - cron: '0 14 * * 5'   # Fri ~10 AM ET — SyFy Sistas
-    - cron: '0 12 * * 4'   # Thu ~8 AM ET  — We Are Starfleet
-    - cron: '0 14 * * 1'   # Mon ~10 AM ET — The Brian Donahue Podcast
-    # - cron: '0 14 * * 3' # Wed ~10 AM ET — Planet Zero (DISABLED: between seasons)
+    - cron: '20 12 * * 2'   # Tue ~8:20 AM ET — Space Crime Continuum + The BIG Sci-Fi Podcast
+    - cron: '20 12 * * 5'   # Fri ~8:20 AM ET — SyFy Sistas
+    - cron: '20 12 * * 4'   # Thu ~8:20 AM ET — We Are Starfleet
+    - cron: '20 12 * * 1'   # Mon ~8:20 AM ET — The Brian Donahue Podcast
+    # - cron: '20 12 * * 3' # Wed ~8:20 AM ET — Planet Zero (DISABLED: between seasons)
   workflow_dispatch:
     inputs:
       show:
@@ -66,12 +68,12 @@ jobs:
             if [ "$sel" = "all" ]; then shows="scc sfs bsf was bdp"; else shows="$sel"; fi
           else
             case "${{ github.event.schedule }}" in
-              "0 14 * * 2") shows="scc bsf" ;;
-              "0 14 * * 5") shows="sfs" ;;
-              "0 12 * * 4") shows="was" ;;
-              "0 14 * * 1") shows="bdp" ;;
-              "0 14 * * 3") shows="pz" ;;
-              *)            shows="" ;;
+              "20 12 * * 2") shows="scc bsf" ;;
+              "20 12 * * 5") shows="sfs" ;;
+              "20 12 * * 4") shows="was" ;;
+              "20 12 * * 1") shows="bdp" ;;
+              "20 12 * * 3") shows="pz" ;;
+              *)             shows="" ;;
             esac
           fi
           echo "shows=$shows" >> "$GITHUB_OUTPUT"
@@ -108,5 +110,19 @@ jobs:
             echo "No state changes to commit."
           else
             git commit -m "Update thumbnail state [skip ci]"
-            git push
+            # The thumbnail is ALREADY uploaded by this point. Saving state back to
+            # the repo can lose a race with a concurrent push (rejected non-fast-
+            # forward), so rebase onto the latest main and retry. Never fail the run
+            # over state: the upload is what matters, and a missed state save just
+            # means the next run re-checks the feed (harmless / self-heals).
+            pushed=""
+            for attempt in 1 2 3 4 5; do
+              if git push; then pushed="yes"; echo "State pushed (attempt $attempt)."; break; fi
+              echo "Push rejected (attempt $attempt); rebasing on origin/main and retrying."
+              git pull --rebase --autostash origin main || true
+              sleep $((attempt * 3))
+            done
+            if [ -z "$pushed" ]; then
+              echo "::warning::State not pushed after 5 attempts. Thumbnail upload already succeeded; state reconciles next run."
+            fi
           fi
