@@ -15,8 +15,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-# -- Config --------------------------------------------------------------------
-
+# -- Config -- (uniform playlist-only bot; one design for every Trek Geeks show)
 SCRIPT_DIR = Path(__file__).parent
 STATE_FILE = SCRIPT_DIR / "state" / "bsf_last_seen.json"
 
@@ -34,8 +33,8 @@ load_config()
 REQUIRED = ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"]
 missing = [k for k in REQUIRED if not os.environ.get(k)]
 if missing:
-    sys.exit(f"ERROR: Missing required config values: {', '.join(missing)}\n"
-             f"Check {SCRIPT_DIR / 'bsf_config.env'}")
+    sys.exit("ERROR: Missing required config values: " + ", ".join(missing) +
+             "\nCheck " + str(SCRIPT_DIR / "bsf_config.env"))
 
 YOUTUBE_CLIENT_ID      = os.environ["YOUTUBE_CLIENT_ID"]
 YOUTUBE_CLIENT_SECRET  = os.environ["YOUTUBE_CLIENT_SECRET"]
@@ -45,21 +44,16 @@ GITHUB_REPO            = os.environ.get("GITHUB_REPO", "wesmith1017-lab/yt-thumb
 GITHUB_BRANCH          = os.environ.get("GITHUB_BRANCH", "main")
 GITHUB_THUMBNAILS_PATH = os.environ.get("GITHUB_THUMBNAILS_PATH", "the-big-sci-fi-podcast")
 
-# Use either YOUTUBE_PLAYLIST_ID or YOUTUBE_CHANNEL_ID -- playlist takes priority
-_playlist_id = os.environ.get("YOUTUBE_PLAYLIST_ID", "")
-_channel_id  = os.environ.get("YOUTUBE_CHANNEL_ID", "")
+# Playlist-only: every show's episodes live in a Trek Geeks playlist. No channel path.
+YOUTUBE_PLAYLIST_ID = os.environ.get("YOUTUBE_PLAYLIST_ID", "PLd0x0jcI5YqM51zqpo-UHsmpTQowCumY2")
 
-if not _playlist_id and not _channel_id:
-    sys.exit("ERROR: Set either YOUTUBE_PLAYLIST_ID or YOUTUBE_CHANNEL_ID in bsf_config.env")
+if not YOUTUBE_PLAYLIST_ID:
+    sys.exit("ERROR: Missing required config value: YOUTUBE_PLAYLIST_ID\n"
+             "Check " + str(SCRIPT_DIR / "bsf_config.env"))
 
-RSS_URL = (
-    f"https://www.youtube.com/feeds/videos.xml?playlist_id={_playlist_id}"
-    if _playlist_id
-    else f"https://www.youtube.com/feeds/videos.xml?channel_id={_channel_id}"
-)
+RSS_URL = f"https://www.youtube.com/feeds/videos.xml?playlist_id={YOUTUBE_PLAYLIST_ID}"
 
-# -- Helpers -------------------------------------------------------------------
-
+# -- Helpers --
 def log(msg: str):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
@@ -68,8 +62,7 @@ def title_to_slug(title: str) -> str:
     slug = re.sub(r'[^a-z0-9]+', "-", slug)
     return slug.strip("-")
 
-# -- State management ----------------------------------------------------------
-
+# -- State --
 def load_state() -> dict:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     if STATE_FILE.exists():
@@ -79,8 +72,7 @@ def load_state() -> dict:
 def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
-# -- RSS feed ------------------------------------------------------------------
-
+# -- RSS feed --
 NS = {
     "atom":  "http://www.w3.org/2005/Atom",
     "yt":    "http://www.youtube.com/xml/schemas/2015",
@@ -88,26 +80,20 @@ NS = {
 }
 
 def fetch_feed_videos() -> list[tuple[str, str]]:
-    
     log(f"Fetching RSS feed: {RSS_URL}")
     resp = requests.get(RSS_URL, timeout=30)
     resp.raise_for_status()
-
     root = ET.fromstring(resp.content)
     videos = []
-
     for entry in root.findall("atom:entry", NS):
         video_id = entry.findtext("yt:videoId", namespaces=NS)
         title    = entry.findtext("atom:title",  namespaces=NS)
         if video_id and title:
             videos.append((video_id, title.strip()))
-
     return videos
 
-# -- GitHub thumbnail fetch ----------------------------------------------------
-
+# -- GitHub thumbnail fetch --
 def fetch_thumbnail(slug: str) -> tuple[bytes | None, str | None]:
-    
     local_root = os.environ.get("LOCAL_ARTWORK_ROOT", "")
     headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
     for ext in ("jpg", "jpeg", "png"):
@@ -125,8 +111,7 @@ def fetch_thumbnail(slug: str) -> tuple[bytes | None, str | None]:
             return resp.content, ext
     return None, None
 
-# -- YouTube API ---------------------------------------------------------------
-
+# -- YouTube API --
 def get_youtube_client():
     creds = Credentials(
         token=None,
@@ -144,32 +129,21 @@ def upload_thumbnail(youtube, video_id: str, image_data: bytes, ext: str):
     media = MediaIoBaseUpload(io.BytesIO(image_data), mimetype=mime, resumable=False)
     youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
 
-# -- Main ----------------------------------------------------------------------
-
+# -- Main --
 def main():
     log("The BIG Sci-Fi Podcast Thumbnail Bot -- starting")
-
-    # FORCE_REPROCESS (set by manual workflow_dispatch runs) makes the bot ignore
-    # saved state and re-apply whatever artwork is currently in the repo.
     force = os.environ.get("FORCE_REPROCESS", "").strip().lower() in ("1", "true", "yes", "on")
-
     state = load_state()
     processed_ids: list[str] = state.get("processed_video_ids", [])
-
     all_videos = fetch_feed_videos()
     if force:
         log("FORCE mode: ignoring saved state; re-applying any matching artwork.")
         candidates = all_videos
     else:
         candidates = [(vid, t) for vid, t in all_videos if vid not in processed_ids]
-
     if not candidates:
         log("No videos to process. Nothing to do.")
         return
-
-    # Match artwork BEFORE authenticating, so OAuth is only touched when there is
-    # actually something to upload. A video with no matching file is skipped but
-    # NOT marked processed, so a thumbnail added later still gets picked up.
     to_upload = []
     for video_id, title in candidates:
         slug = title_to_slug(title)
@@ -178,30 +152,23 @@ def main():
             log(f'No thumbnail for "{title}" (slug: {slug}) - skipping (not an error).')
             continue
         to_upload.append((video_id, title, slug, image_data, ext))
-
     if not to_upload:
         log("No matching artwork for any candidate video. Nothing to upload.")
         return
-
     youtube = get_youtube_client()
     updated = []
-
     for video_id, title, slug, image_data, ext in to_upload:
         log(f'Uploading thumbnail for "{title}" (ID: {video_id}, slug: {slug})...')
         try:
             upload_thumbnail(youtube, video_id, image_data, ext)
         except Exception as e:
-            raise RuntimeError(
-                f'Thumbnail upload FAILED for "{title}" (ID: {video_id}): {e}'
-            ) from e
+            raise RuntimeError(f'Thumbnail upload FAILED for "{title}" (ID: {video_id}): {e}') from e
         log("  Done!")
         updated.append(title)
         if video_id not in processed_ids:
             processed_ids.append(video_id)
-
     state["processed_video_ids"] = processed_ids[-200:]
     save_state(state)
-
     log("--- Summary ---")
     log(f"Thumbnails uploaded: {', '.join(updated)}")
     log("Done.")
