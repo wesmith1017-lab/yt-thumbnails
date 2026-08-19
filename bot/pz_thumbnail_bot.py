@@ -93,6 +93,19 @@ def save_state(state: dict):
 
 # ── RSS feed ──────────────────────────────────────────────────────────────────
 
+# -- Playlist listing --
+#
+# The YouTube Data API is the source of truth. The RSS feed at
+# youtube.com/feeds/videos.xml is aggressively cached on YouTube's side and has
+# been observed omitting a freshly-published video for 16+ hours, which silently
+# skips a whole episode (BSF "Time After Time", 2026-08-18: the video was
+# position 1 in the playlist while the feed still ended at the previous drop).
+# playlistItems.list reflects the playlist immediately and costs 1 quota unit
+# per 50-item page against a 10,000/day budget. RSS is kept only as a fallback.
+
+MAX_PLAYLIST_PAGES = 10
+SKIP_LOG_LIMIT = 10
+
 NS = {
     "atom":  "http://www.w3.org/2005/Atom",
     "yt":    "http://www.youtube.com/xml/schemas/2015",
@@ -100,12 +113,37 @@ NS = {
 }
 
 
+def fetch_playlist_videos_api(youtube) -> list[tuple[str, str]]:
+    """Returns [(video_id, title), ...] in playlist order, straight from the API."""
+    log(f"Listing playlist items via YouTube Data API: {YOUTUBE_PLAYLIST_ID}")
+    videos: list[tuple[str, str]] = []
+    page_token = None
+    for _ in range(MAX_PLAYLIST_PAGES):
+        resp = youtube.playlistItems().list(
+            part="snippet",
+            playlistId=YOUTUBE_PLAYLIST_ID,
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+        for item in resp.get("items", []):
+            snippet = item.get("snippet", {})
+            video_id = snippet.get("resourceId", {}).get("videoId")
+            title = snippet.get("title")
+            if not video_id or not title:
+                continue
+            if title in ("Private video", "Deleted video"):
+                continue
+            videos.append((video_id, title.strip()))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    log(f"  {len(videos)} videos in playlist.")
+    return videos
+
+
 def fetch_feed_videos() -> list[tuple[str, str]]:
-    """
-    Returns [(video_id, title), ...] for EVERY entry in the feed (newest first).
-    Filtering against saved state happens in main(), so force mode can bypass it.
-    """
-    log(f"Fetching RSS feed: {RSS_URL}")
+    """Fallback only -- the cached RSS feed. See the note above."""
+    log(f"Falling back to RSS feed: {RSS_URL}")
     resp = requests.get(RSS_URL, timeout=30)
     resp.raise_for_status()
 
@@ -119,6 +157,15 @@ def fetch_feed_videos() -> list[tuple[str, str]]:
             videos.append((video_id, title.strip()))
 
     return videos
+
+
+def fetch_playlist_videos(youtube) -> list[tuple[str, str]]:
+    """API first, RSS only if the API call blows up."""
+    try:
+        return fetch_playlist_videos_api(youtube)
+    except Exception as e:
+        log(f"  WARNING: Data API playlist listing failed ({e}); falling back to RSS.")
+        return fetch_feed_videos()
 
 # ── GitHub thumbnail fetch ────────────────────────────────────────────────────
 
@@ -183,7 +230,8 @@ def main():
     state = load_state()
     processed_ids: list[str] = state.get("processed_video_ids", [])
 
-    all_videos = fetch_feed_videos()
+    youtube = get_youtube_client()
+    all_videos = fetch_playlist_videos(youtube)
     if force:
         log("FORCE mode: ignoring saved state; re-applying any matching artwork.")
         candidates = all_videos
@@ -194,23 +242,27 @@ def main():
         log("No videos to process. Nothing to do.")
         return
 
-    # Match artwork BEFORE authenticating, so OAuth is only touched when there is
-    # actually something to upload. A video with no matching file is skipped but
-    # NOT marked processed, so a thumbnail added later still gets picked up.
+    # A video with no matching file is skipped but NOT marked processed, so a
+    # thumbnail committed later still gets picked up on the next run.
     to_upload = []
+    skipped = 0
     for video_id, title in candidates:
         slug = title_to_slug(title)
         image_data, ext = fetch_thumbnail(slug)
         if image_data is None:
-            log(f'No thumbnail for "{title}" (slug: {slug}) - skipping (not an error).')
+            if skipped < SKIP_LOG_LIMIT:
+                log(f'No thumbnail for "{title}" (slug: {slug}) - skipping (not an error).')
+            skipped += 1
             continue
         to_upload.append((video_id, title, slug, image_data, ext))
+
+    if skipped > SKIP_LOG_LIMIT:
+        log(f"...and {skipped - SKIP_LOG_LIMIT} more with no matching artwork (skipped).")
 
     if not to_upload:
         log("No matching artwork for any candidate video. Nothing to upload.")
         return
 
-    youtube = get_youtube_client()
     updated = []
 
     for video_id, title, slug, image_data, ext in to_upload:
